@@ -28,6 +28,15 @@ policy to be within a certain range ( $1\pm \varepsilon$, where epsilon is a sma
 
 This objective allows for frequent policy updates with reduced sample complexity compared to other methods while still ensuring the mathematical stability of the policy improvement process.
 
+## Installation 
+##### MacOS/Unix: 
+env/bin/python -m pip install -r requirements.txt
+
+##### Windows: 
+env\bin\python -m pip install -r requirements.txt
+
+N.B. See [pip 'freeze' documentation](https://pip.pypa.io/en/stable/cli/pip_freeze/) for detailed explanation.
+
 
 ## References
 <a id="1">[1]</a> John Schulman, Filip Wolski, et. al. (2017). [Proximal Policy Optimization Algorithms](https://arxiv.org/abs/1707.06347). Arxiv (v2). <br>
