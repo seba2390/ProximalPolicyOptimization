@@ -28,6 +28,11 @@ policy to be within a certain range ( $1\pm \varepsilon$, where epsilon is a sma
 
 This objective allows for frequent policy updates with reduced sample complexity compared to other methods while still ensuring the mathematical stability of the policy improvement process.
 
+## Implementation
+In this repository, PPO is implemented both the Value functions and the Policy designed as Neural Networks
+in Pytorch. As an initial example, the PPO agent is trained to learn the [Cart Pole game](https://gymnasium.farama.org/environments/classic_control/cart_pole/#cart-pole).
+
+
 ## Installation 
 ##### MacOS/Unix: 
 env/bin/python -m pip install -r requirements.txt
