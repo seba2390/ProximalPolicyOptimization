@@ -4,7 +4,7 @@
 
 # ProximalPolicyOptimization
 
-**Proximal Policy Optimization** (PPO) [1] is a __Reinforcement Learning__ (RL) algorithm.
+**Proximal Policy Optimization** (PPO) [[1]](#1) is a __Reinforcement Learning__ (RL) algorithm.
 Conceptually, RL is a branch of __Machine Learning__ (ML) in which problems as generally modelled as 
 the process of some _agent_ learning to make decisions by performing 
 actions in an environment, with the intent of maximizing some pre-defined 
@@ -22,7 +22,7 @@ largest possible improvement step on a policy, without causing the performance t
 common problem with these types of algorithms).
 
 PPO addresses this challenge by utilizing a concept known as [Trust Region Optimization](https://en.wikipedia.org/wiki/Trust_region), but in a more computationally efficient 
-and simpler manner, than its predecessor, **Trust Region Policy Optimization** (TRPO) [2]. 
+and simpler manner, than its predecessor, **Trust Region Policy Optimization** (TRPO) [[2]](#2). 
 
 Specifically, PPO achieves this by limiting the amount of change in the policy at each update, thus 
 avoiding too large updates that could lead to performance collapse. It uses a [clipped version of the 
@@ -33,7 +33,6 @@ policy to be within a certain range ( $1\pm \varepsilon$, where epsilon is a sma
 This objective allows for frequent policy updates with reduced sample complexity compared to other methods while still ensuring the mathematical stability of the policy improvement process.
 
 
-## Bibliography
-
-1. John Schulman, Filip Wolski, et. al. (2017). [Proximal Policy Optimization Algorithms](https://arxiv.org/abs/1707.06347). Arxiv (v2).
-2. John Schulman, Sergey Levine, et. al. (2017). [Trust Region Policy Optimization](https://arxiv.org/abs/1502.05477), Arxiv (v5).
+## References
+<a id="1">[1]</a> John Schulman, Filip Wolski, et. al. (2017). [Proximal Policy Optimization Algorithms](https://arxiv.org/abs/1707.06347). Arxiv (v2). <br>
+<a id="2">[2]</a> John Schulman, Sergey Levine, et. al. (2017). [Trust Region Policy Optimization](https://arxiv.org/abs/1502.05477), Arxiv (v5).
