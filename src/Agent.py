@@ -336,3 +336,35 @@ class PPOAgent:
                     value_optimizer.step()
             accumulated_reward.append(float(torch.sum(rewards).detach().numpy()))
         return accumulated_reward
+
+    def play(self, render=True):
+        # Reset environment and get the initial state
+        state, info = self.env.reset()
+
+        done = False
+        game_length = 0
+
+        while not done:
+            # Render the game if render is True
+            if render:
+                self.env.render()
+
+            # Convert state to tensor for policy network
+            state_tensor = torch.tensor(state, dtype=self.dtype).unsqueeze(0)
+
+            # Get action probabilities from the policy network
+            action_probs = self.policy_net(state_tensor)
+
+            # Select the action with the highest probability
+            action = torch.argmax(action_probs, dim=1)
+
+            # Take the action in the environment
+            state, reward, done, _, _ = self.env.step(action.item())
+
+            game_length += 1
+
+        # Close the rendering window
+        self.env.close()
+        print("#" * 36)
+        print(f"# --- Survived for: {game_length} episodes --- #")
+        print("#" * 36)
