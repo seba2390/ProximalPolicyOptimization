@@ -3,14 +3,16 @@ import gymnasium as gym
 import numpy as np
 
 from src import PolicyNetwork
-
+from src import MultiHeadNetwork
 
 class Trajectories:
     def __init__(self,
                  batch_size: int,
                  env: gym.Env,
                  policy_network: PolicyNetwork,
-                 seed: int):
+                 multihead_network: MultiHeadNetwork,
+                 seed: int,
+                 architecture: str = 'Individual Networks'):
         if not isinstance(batch_size, int):
             raise TypeError(f'batch_size must be an integer, not {type(batch_size)}.')
         if batch_size < 1:
@@ -18,7 +20,9 @@ class Trajectories:
 
         self.batch_size = batch_size
         self.env = env
+        self.architecture = architecture
         self.policy_network = policy_network
+        self.multihead_network = multihead_network
         self.seed = seed
         torch.manual_seed(self.seed)
 
@@ -32,7 +36,10 @@ class Trajectories:
         done = False
         while not done:
             # Retrieve current action prob. distribution
-            action_probs = self.policy_network(torch.tensor(state))
+            if self.architecture == 'Individual Networks':
+                action_probs = self.policy_network(torch.tensor(state))
+            elif self.architecture == 'Multi Head Network':
+                _, action_probs = self.multihead_network(torch.tensor(state))
 
             # Sample action from distribution
             action = torch.multinomial(input=action_probs, num_samples=1)

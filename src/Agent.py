@@ -21,7 +21,7 @@ class PPOAgent:
                  smooting_const: float,
                  shuffle_batches: bool,
                  normalize_advantages: bool = True,
-                 architecture: bool = 'Individual Networks',
+                 architecture: str = 'Individual Networks',
                  dtype: torch.dtype = torch.float32,
                  seed: int = 0,
                  device: str = 'cpu'):
@@ -44,7 +44,7 @@ class PPOAgent:
         self.device = device
         torch.manual_seed(self.seed)
 
-        __defined_architectures__ = ['Individual Networks', 'Multi Head Networks']
+        __defined_architectures__ = ['Individual Networks', 'Multi Head Network']
         if self.architecture not in __defined_architectures__:
             raise ValueError(f'Architecture must be one of: {__defined_architectures__}.')
 
@@ -69,12 +69,19 @@ class PPOAgent:
             # Initialize to same weights as policy net
             self.policy_net_OLD.load_state_dict(self.policy_net.state_dict())
 
-        elif architecture == 'Multi Head Networks':
+        elif architecture == 'Multi Head Network':
             self.multihead_net = MultiHeadNetwork(state_space_size=self.state_space_size,
                                                   action_space_size=self.action_space_size,
                                                   dtype=self.dtype,
                                                   seed=self.seed,
                                                   device=self.device)
+            self.multihead_net_OLD = MultiHeadNetwork(state_space_size=self.state_space_size,
+                                                      action_space_size=self.action_space_size,
+                                                      dtype=self.dtype,
+                                                      seed=self.seed,
+                                                      device=self.device)
+            # Initialize to same weights as multihead net
+            self.multihead_net_OLD.load_state_dict(self.multihead_net.state_dict())
 
     def get_normalized_advantages(self, advantages: torch.Tensor) -> torch.Tensor:
         normalized_advantages = (advantages - advantages.mean()) / (torch.std(advantages) + self.smoothing_constant)
@@ -98,39 +105,74 @@ class PPOAgent:
 
     def get_policy_loss(self, states: torch.Tensor, actions: torch.Tensor, advantages: torch.Tensor):
 
-        # Compute the probability of the action taken under the old policy
-        action_probs_old = self.policy_net_OLD(states)
-        pi_old = torch.gather(input=action_probs_old, dim=1, index=actions.unsqueeze(1))
+        if self.architecture == "Individual Networks":
+            # Compute the probability of the action taken under the old policy
+            action_probs_old = self.policy_net_OLD(states)
+            pi_old = torch.gather(input=action_probs_old, dim=1, index=actions.unsqueeze(1))
 
-        # Compute the probability of the action taken under the current policy
-        action_probs_new = self.policy_net(states)
-        pi_new = torch.gather(input=action_probs_new, dim=1, index=actions.unsqueeze(1))
+            # Compute the probability of the action taken under the current policy
+            action_probs_new = self.policy_net(states)
+            pi_new = torch.gather(input=action_probs_new, dim=1, index=actions.unsqueeze(1))
 
-        # Compute the ratio r(θ)
-        r = (pi_new / pi_old).flatten()
+            # Compute the ratio r(θ)
+            r = (pi_new / pi_old).flatten()
 
-        # Compute the clipped surrogate objective
-        surrogate_obj = r * advantages
+            # Compute the clipped surrogate objective
+            surrogate_obj = r * advantages
 
-        clipped_obj = torch.clamp(r, 1 - self.epsilon, 1 + self.epsilon) * advantages
+            clipped_obj = torch.clamp(r, 1 - self.epsilon, 1 + self.epsilon) * advantages
 
-        # Compute the policy loss
-        policy_loss = -torch.min(surrogate_obj, clipped_obj).mean()
-        return policy_loss
+            # Compute the policy loss
+            policy_loss = -torch.min(surrogate_obj, clipped_obj).mean()
+            return policy_loss
+
+        elif self.architecture == "Multi Head Network":
+            # Compute the probability of the action taken under the old policy
+            _, action_probs_old = self.multihead_net_OLD(states)
+            pi_old = torch.gather(input=action_probs_old, dim=1, index=actions.unsqueeze(1))
+
+            # Compute the probability of the action taken under the current policy
+            _, action_probs_new = self.multihead_net(states)
+            pi_new = torch.gather(input=action_probs_new, dim=1, index=actions.unsqueeze(1))
+
+            # Compute the ratio r(θ)
+            r = (pi_new / pi_old).flatten()
+
+            # Compute the clipped surrogate objective
+            surrogate_obj = r * advantages
+
+            clipped_obj = torch.clamp(r, 1 - self.epsilon, 1 + self.epsilon) * advantages
+
+            # Compute the policy loss
+            policy_loss = -torch.min(surrogate_obj, clipped_obj).mean()
+            return policy_loss
 
     def get_value_loss(self, states: torch.Tensor, next_states: torch.Tensor, rewards: torch.Tensor):
 
-        # Compute target value (for last step - set to reward)
-        target_values = rewards + self.gamma * self.value_net(next_states).flatten().detach()
-        target_values = torch.cat((target_values[:-1], torch.tensor([rewards[-1].item()])))
+        if self.architecture == "Individual Networks":
+            # Compute target value (for last step - set to reward)
+            target_values = rewards + self.gamma * self.value_net(next_states).flatten().detach()
+            target_values = torch.cat((target_values[:-1], torch.tensor([rewards[-1].item()])))
 
-        # Compute estimated value
-        estimated_values = self.value_net(states).flatten()
+            # Compute estimated value
+            estimated_values = self.value_net(states).flatten()
 
-        # Compute the value loss
-        value_loss = torch.nn.functional.mse_loss(estimated_values, target_values)
+            # Compute the value loss
+            value_loss = torch.nn.functional.mse_loss(estimated_values, target_values)
+            return value_loss
 
-        return value_loss
+        elif self.architecture == "Multi Head Network":
+            # Compute target value (for last step - set to reward)
+            values, _ = self.multihead_net(next_states)
+            target_values = rewards + self.gamma * values.flatten().detach()
+            target_values = torch.cat((target_values[:-1], torch.tensor([rewards[-1].item()])))
+
+            # Compute estimated value
+            estimated_values, _ = self.multihead_net(states)
+
+            # Compute the value loss
+            value_loss = torch.nn.functional.mse_loss(estimated_values.flatten(), target_values)
+            return value_loss
 
     def train(self,
               episodes: int,
@@ -140,6 +182,8 @@ class PPOAgent:
               num_policy_epochs: int = None,
               num_value_epochs: int = None,
               num_multihead_epochs: int = None):
+
+        avg_accumulated_reward = []
 
         if self.architecture == 'Individual Networks':
             if policy_lr is None or value_lr is None or num_policy_epochs is None or num_value_epochs is None:
@@ -152,17 +196,22 @@ class PPOAgent:
             # Define the optimizer for the value network
             value_optimizer = torch.optim.Adam(self.value_net.parameters(), lr=value_lr)
 
-            avg_accumulated_reward = []
-
             for episode in tqdm(range(episodes)):
+
                 # Retrieving batch of trajectories
-                trajectories = Trajectories(batch_size=self.batch_size, env=self.env, policy_network=self.policy_net,
+                trajectories = Trajectories(batch_size=self.batch_size,
+                                            env=self.env,
+                                            policy_network=self.policy_net,
+                                            multihead_network=None,
+                                            architecture=self.architecture,
                                             seed=episode * self.batch_size + 1)
+
                 # States_batch has dims:      (batch size , game length , state space size)
                 # next_states_batch has dims: (batch size , game length , state space size)
                 # actions_batch has dims:     (batch size , game length)
                 # rewards_batch has dims:     (batch size , game length)
                 states_batch, actions_batch, rewards_batch, next_states_batch = trajectories.get_batch()
+
                 # Computing advantages
                 advantages_batch = torch.zeros_like(rewards_batch)
                 for trajectory in range(self.batch_size):
@@ -206,10 +255,10 @@ class PPOAgent:
 
                 # Value Network Update
                 for value_epoch in range(num_value_epochs):
-                    for batch in range(self.batch_size):
-                        states = states_batch[batch]
-                        rewards = rewards_batch[batch]
-                        next_states = next_states_batch[batch]
+                    for trajectory in range(self.batch_size):
+                        states = states_batch[trajectory]
+                        rewards = rewards_batch[trajectory]
+                        next_states = next_states_batch[trajectory]
 
                         # Compute the value loss
                         value_loss = self.get_value_loss(states=states, next_states=next_states, rewards=rewards)
@@ -232,25 +281,82 @@ class PPOAgent:
                 avg_accumulated_reward.append(float(torch.mean(torch.sum(rewards_batch, dim=1)).detach().numpy()))
             return avg_accumulated_reward
 
-        elif self.architecture == 'Multi Head Networks':
+        elif self.architecture == 'Multi Head Network':
             if multihead_lr is None or num_multihead_epochs is None:
-                raise ValueError("If architecture is Multi Head Networks, all the following params must be provided"
+                raise ValueError("If architecture is Multi Head Network, all the following params must be provided"
                                  " [multihead_lr, num_multihead_epochs].")
 
             # Define the optimizer for the multi head network
-            optimizer = torch.optim.Adam(self.multihead_net.parameters(), lr=policy_lr)
-            avg_accumulated_reward = []
+            optimizer = torch.optim.Adam(self.multihead_net.parameters(), lr=multihead_lr)
 
             for episode in tqdm(range(episodes)):
                 # Retrieving batch of trajectories
-                trajectories = Trajectories(batch_size=self.batch_size, env=self.env, policy_network=self.policy_net,
+                trajectories = Trajectories(batch_size=self.batch_size,
+                                            env=self.env,
+                                            policy_network=None,
+                                            multihead_network=self.multihead_net,
+                                            architecture=self.architecture,
                                             seed=episode * self.batch_size + 1)
+
                 # States_batch has dims:      (batch size , game length , state space size)
                 # next_states_batch has dims: (batch size , game length , state space size)
                 # actions_batch has dims:     (batch size , game length)
                 # rewards_batch has dims:     (batch size , game length)
                 states_batch, actions_batch, rewards_batch, next_states_batch = trajectories.get_batch()
-                
+
+                self.multihead_net_OLD.load_state_dict(self.multihead_net.state_dict())
+
+                # Computing advantages
+                advantages_batch = torch.zeros_like(rewards_batch)
+                for trajectory in range(self.batch_size):
+                    states = states_batch[trajectory]
+                    rewards = rewards_batch[trajectory]
+                    next_states = next_states_batch[trajectory]
+
+                    values, _ = self.multihead_net(states)
+                    next_values, _ = self.multihead_net(next_states)
+                    # The value is 0 at the end of the trajectory (hence the concatenation of 0 at the end)
+                    next_values = torch.cat((next_values[:-1].flatten(), torch.tensor([0])))
+                    deltas = self.compute_TD_residual(rewards=rewards, next_values=next_values, values=values.flatten())
+                    advantages_batch[trajectory] = self.compute_GAE(deltas=deltas)
+
+                for multihead_epoch in range(num_multihead_epochs):
+                    for trajectory in range(self.batch_size):
+                        # First updating multihead w. respect to policy head
+                        states = states_batch[trajectory].detach()
+                        actions = actions_batch[trajectory].detach()
+                        advantages = advantages_batch[trajectory].detach()
+
+                        # Compute the policy loss
+                        policy_loss = self.get_policy_loss(states=states, actions=actions, advantages=advantages)
+
+                        # Then updating multihead w. respect to value head
+                        states = states_batch[trajectory]
+                        rewards = rewards_batch[trajectory]
+                        next_states = next_states_batch[trajectory]
+
+                        # Compute the value loss
+                        value_loss = self.get_value_loss(states=states, next_states=next_states, rewards=rewards)
+
+                        # Update multihead network parameters using the optimizer
+                        total_loss = policy_loss + value_loss
+
+                        optimizer.zero_grad()
+                        total_loss.backward()
+                        optimizer.step()
+
+                    # Shuffle batch
+                    if self.shuffle_batches:
+                        states_batch, actions_batch, rewards_batch, next_states_batch, advantages_batch = random_shuffle(
+                            states_batch=states_batch,
+                            actions_batch=actions_batch,
+                            rewards_batch=rewards_batch,
+                            next_states_batch=next_states_batch,
+                            advantages_batch=advantages_batch,
+                            seed=self.seed)
+
+                avg_accumulated_reward.append(float(torch.mean(torch.sum(rewards_batch, dim=1)).detach().numpy()))
+            return avg_accumulated_reward
 
     def play(self, render=True):
         # Reset environment and get the initial state
@@ -268,7 +374,10 @@ class PPOAgent:
             state_tensor = torch.tensor(state, dtype=self.dtype).unsqueeze(0)
 
             # Get action probabilities from the policy network
-            action_probs = self.policy_net(state_tensor)
+            if self.architecture == "Multi Head Network":
+                _, action_probs = self.multihead_net_OLD(state_tensor)
+            else:
+                action_probs = self.policy_net(state_tensor)
 
             # Select the action with the highest probability
             action = torch.argmax(action_probs, dim=1)
