@@ -1,5 +1,5 @@
 import torch
-import gym
+import gymnasium as gym
 import numpy as np
 
 from src.PolicyNetwork import PolicyNetwork
@@ -49,6 +49,13 @@ class Trajectories:
         return states, actions, rewards, next_states
 
     def get_batch(self):
+        """
+        States_batch has dims:      (batch size , game length , state space size)
+        next_states_batch has dims: (batch size , game length , state space size)
+        actions_batch has dims:     (batch size,  game length)
+        rewards_batch has dims:     (batch size,  game length)
+        """
+
         states_batch, actions_batch, rewards_batch, next_states_batch = [], [], [], []
         shortest_game = np.inf
         for datapoint in range(self.batch_size):
