@@ -5,9 +5,11 @@ import numpy as np
 from src import PolicyNetwork
 from src import MultiHeadNetwork
 
+
 class Trajectories:
     def __init__(self,
                  batch_size: int,
+                 max_game_length: int,
                  env: gym.Env,
                  policy_network: PolicyNetwork,
                  multihead_network: MultiHeadNetwork,
@@ -19,6 +21,7 @@ class Trajectories:
             raise ValueError(f'batch_size must be a positive integer >= 1, not {batch_size}.')
 
         self.batch_size = batch_size
+        self.max_game_length = max_game_length
         self.env = env
         self.architecture = architecture
         self.policy_network = policy_network
@@ -34,12 +37,14 @@ class Trajectories:
         states, actions, rewards, next_states = [], [], [], []
 
         done = False
-        while not done:
+        while not done and len(rewards) < self.max_game_length:
             # Retrieve current action prob. distribution
             if self.architecture == 'Individual Networks':
                 action_probs = self.policy_network(torch.tensor(state))
             elif self.architecture == 'Multi Head Network':
                 _, action_probs = self.multihead_network(torch.tensor(state))
+            else:
+                raise ValueError(f'Architecture must be one of: {["Individual Networks", "Multi Head Network"]}.')
 
             # Sample action from distribution
             action = torch.multinomial(input=action_probs, num_samples=1)
@@ -58,7 +63,7 @@ class Trajectories:
 
         return states, actions, rewards, next_states
 
-    def get_batch(self):
+    def get_batch(self) -> tuple[list[torch.Tensor], list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
         """
         States_batch has dims:      (batch size , game length , state space size)
         next_states_batch has dims: (batch size , game length , state space size)
@@ -67,20 +72,11 @@ class Trajectories:
         """
 
         states_batch, actions_batch, rewards_batch, next_states_batch = [], [], [], []
-        shortest_game = np.inf
         for datapoint in range(self.batch_size):
-            states, actions, rewards, next_states = self.get_trajectory(seed=self.seed+datapoint)
-            states_batch.append(states)
-            actions_batch.append(actions)
-            rewards_batch.append(rewards)
-            next_states_batch.append(next_states)
-            if len(states) < shortest_game:
-                shortest_game = len(states)
-
-        # Truncating length of each game to length of shortest
-        states_batch = torch.tensor([state[:shortest_game] for state in states_batch])
-        actions_batch = torch.tensor([action[:shortest_game] for action in actions_batch])
-        rewards_batch = torch.tensor([reward[:shortest_game] for reward in rewards_batch])
-        next_states_batch = torch.tensor([next_state[:shortest_game] for next_state in next_states_batch])
+            states, actions, rewards, next_states = self.get_trajectory(seed=self.seed + datapoint)
+            states_batch.append(torch.tensor(states))
+            actions_batch.append(torch.tensor(actions))
+            rewards_batch.append(torch.tensor(rewards))
+            next_states_batch.append(torch.tensor(next_states))
 
         return states_batch, actions_batch, rewards_batch, next_states_batch

@@ -1,6 +1,7 @@
 import gymnasium as gym
 import torch
 from tqdm import tqdm
+import numpy as np
 
 from src.ValueNetwork import ValueNetwork
 from src.PolicyNetwork import PolicyNetwork
@@ -15,6 +16,7 @@ class PPOAgent:
                  state_space_size: int,
                  action_space_size: int,
                  batch_size: int,
+                 max_game_length: int,
                  gamma: float,
                  lmbda: float,
                  epsilon: float,
@@ -36,6 +38,7 @@ class PPOAgent:
         self.smoothing_constant = smooting_const
         self.normalize_advantages = normalize_advantages
         self.batch_size = batch_size
+        self.max_game_length = max_game_length
         self.shuffle_batches = shuffle_batches
 
         self.architecture = architecture
@@ -186,6 +189,9 @@ class PPOAgent:
         avg_accumulated_reward = []
 
         if self.architecture == 'Individual Networks':
+
+            avg_value_net_loss, avg_policy_net_loss = [], []
+
             if policy_lr is None or value_lr is None or num_policy_epochs is None or num_value_epochs is None:
                 raise ValueError("If architecture is Individual Networks, all the following params must be provided"
                                  " [policy_lr, value_lr, num_policy_epochs, num_value_epochs].")
@@ -200,6 +206,7 @@ class PPOAgent:
 
                 # Retrieving batch of trajectories
                 trajectories = Trajectories(batch_size=self.batch_size,
+                                            max_game_length=self.max_game_length,
                                             env=self.env,
                                             policy_network=self.policy_net,
                                             multihead_network=None,
@@ -211,9 +218,10 @@ class PPOAgent:
                 # actions_batch has dims:     (batch size , game length)
                 # rewards_batch has dims:     (batch size , game length)
                 states_batch, actions_batch, rewards_batch, next_states_batch = trajectories.get_batch()
+                avg_accumulated_reward.append(np.mean([torch.sum(rewards).detach().item() for rewards in rewards_batch]))
 
                 # Computing advantages
-                advantages_batch = torch.zeros_like(rewards_batch)
+                advantages_batch = []
                 for trajectory in range(self.batch_size):
                     states = states_batch[trajectory]
                     rewards = rewards_batch[trajectory]
@@ -223,12 +231,13 @@ class PPOAgent:
                     # The value is 0 at the end of the trajectory (hence the concatenation of 0 at the end)
                     next_values = torch.cat((self.value_net(next_states)[:-1].flatten(), torch.tensor([0])))
                     deltas = self.compute_TD_residual(rewards=rewards, next_values=next_values, values=values)
-                    advantages_batch[trajectory] = self.compute_GAE(deltas=deltas)
+                    advantages_batch.append(self.compute_GAE(deltas=deltas))
 
                 # Store the old policy parameters (before update)
                 self.policy_net_OLD.load_state_dict(self.policy_net.state_dict())
 
                 # Policy Network Update:
+                __current_policy_loss__ = []
                 for policy_epoch in range(num_policy_epochs):
                     for trajectory in range(self.batch_size):
                         states = states_batch[trajectory].detach()
@@ -242,6 +251,7 @@ class PPOAgent:
                         policy_optimizer.zero_grad()
                         policy_loss.backward()
                         policy_optimizer.step()
+                        __current_policy_loss__.append(policy_loss.detach().item())
 
                     # Shuffle batch
                     if self.shuffle_batches:
@@ -252,8 +262,10 @@ class PPOAgent:
                             next_states_batch=next_states_batch,
                             advantages_batch=advantages_batch,
                             seed=self.seed)
+                avg_policy_net_loss.append(np.mean(__current_policy_loss__))
 
                 # Value Network Update
+                __current_value_loss__ = []
                 for value_epoch in range(num_value_epochs):
                     for trajectory in range(self.batch_size):
                         states = states_batch[trajectory]
@@ -267,6 +279,7 @@ class PPOAgent:
                         value_optimizer.zero_grad()
                         value_loss.backward()
                         value_optimizer.step()
+                        __current_value_loss__.append(value_loss.detach().item())
 
                     # Shuffle batch
                     if self.shuffle_batches:
@@ -277,14 +290,16 @@ class PPOAgent:
                             next_states_batch=next_states_batch,
                             advantages_batch=advantages_batch,
                             seed=self.seed)
+                avg_value_net_loss.append(np.mean(__current_value_loss__))
 
-                avg_accumulated_reward.append(float(torch.mean(torch.sum(rewards_batch, dim=1)).detach().numpy()))
-            return avg_accumulated_reward
+            return avg_accumulated_reward, avg_value_net_loss, avg_policy_net_loss
 
         elif self.architecture == 'Multi Head Network':
             if multihead_lr is None or num_multihead_epochs is None:
                 raise ValueError("If architecture is Multi Head Network, all the following params must be provided"
                                  " [multihead_lr, num_multihead_epochs].")
+
+            avg_multihead_net_loss = []
 
             # Define the optimizer for the multi head network
             optimizer = torch.optim.Adam(self.multihead_net.parameters(), lr=multihead_lr)
@@ -292,6 +307,7 @@ class PPOAgent:
             for episode in tqdm(range(episodes)):
                 # Retrieving batch of trajectories
                 trajectories = Trajectories(batch_size=self.batch_size,
+                                            max_game_length=self.max_game_length,
                                             env=self.env,
                                             policy_network=None,
                                             multihead_network=self.multihead_net,
@@ -303,11 +319,11 @@ class PPOAgent:
                 # actions_batch has dims:     (batch size , game length)
                 # rewards_batch has dims:     (batch size , game length)
                 states_batch, actions_batch, rewards_batch, next_states_batch = trajectories.get_batch()
-
+                avg_accumulated_reward.append(np.mean([torch.sum(rewards).detach().item() for rewards in rewards_batch]))
                 self.multihead_net_OLD.load_state_dict(self.multihead_net.state_dict())
 
                 # Computing advantages
-                advantages_batch = torch.zeros_like(rewards_batch)
+                advantages_batch = []
                 for trajectory in range(self.batch_size):
                     states = states_batch[trajectory]
                     rewards = rewards_batch[trajectory]
@@ -318,8 +334,9 @@ class PPOAgent:
                     # The value is 0 at the end of the trajectory (hence the concatenation of 0 at the end)
                     next_values = torch.cat((next_values[:-1].flatten(), torch.tensor([0])))
                     deltas = self.compute_TD_residual(rewards=rewards, next_values=next_values, values=values.flatten())
-                    advantages_batch[trajectory] = self.compute_GAE(deltas=deltas)
+                    advantages_batch.append(self.compute_GAE(deltas=deltas))
 
+                __current_multihead_loss__ = []
                 for multihead_epoch in range(num_multihead_epochs):
                     for trajectory in range(self.batch_size):
                         # First updating multihead w. respect to policy head
@@ -344,6 +361,7 @@ class PPOAgent:
                         optimizer.zero_grad()
                         total_loss.backward()
                         optimizer.step()
+                        __current_multihead_loss__.append(total_loss.detach().item())
 
                     # Shuffle batch
                     if self.shuffle_batches:
@@ -354,18 +372,18 @@ class PPOAgent:
                             next_states_batch=next_states_batch,
                             advantages_batch=advantages_batch,
                             seed=self.seed)
+                avg_multihead_net_loss.append(np.mean(__current_multihead_loss__))
 
-                avg_accumulated_reward.append(float(torch.mean(torch.sum(rewards_batch, dim=1)).detach().numpy()))
-            return avg_accumulated_reward
+            return avg_accumulated_reward, avg_multihead_net_loss
 
-    def play(self, render=True):
+    def play(self, render=True, max_game_length: int = 10000):
         # Reset environment and get the initial state
         state, info = self.env.reset(seed=self.seed)
 
         done = False
         game_length = 0
 
-        while not done:
+        while not done and game_length < max_game_length:
             # Render the game if render is True
             if render:
                 self.env.render()
