@@ -5,6 +5,7 @@ from tqdm import tqdm
 from src2.ValueNetwork import ValueNetwork
 from src2.PolicyNetwork import PolicyNetwork
 from src2.Trajectories import Trajectories
+from src2.Utils import random_shuffle
 
 
 class PPOAgent:
@@ -17,8 +18,10 @@ class PPOAgent:
                  lmbda: float,
                  epsilon: float,
                  smooting_const: float,
+                 shuffle_batches: bool,
                  normalize_advantages: bool = True,
                  dtype: torch.dtype = torch.float32,
+                 seed: int = 0,
                  device: str = 'cpu'):
 
         self.env = env
@@ -31,77 +34,37 @@ class PPOAgent:
         self.smoothing_constant = smooting_const
         self.normalize_advantages = normalize_advantages
         self.batch_size = batch_size
+        self.shuffle_batches = shuffle_batches
 
         self.dtype = dtype
+        self.seed = seed
         self.device = device
+        torch.manual_seed(self.seed)
 
         self.value_net = ValueNetwork(state_space_size=self.state_space_size,
                                       dtype=self.dtype,
+                                      seed=self.seed,
                                       device=self.device)
 
         self.policy_net = PolicyNetwork(state_space_size=self.state_space_size,
                                         action_space_size=self.action_space_size,
                                         dtype=self.dtype,
+                                        seed=self.seed,
                                         device=self.device)
 
         self.policy_net_OLD = PolicyNetwork(state_space_size=self.state_space_size,
                                             action_space_size=self.action_space_size,
                                             dtype=self.dtype,
+                                            seed=self.seed,
                                             device=self.device)
         # Initialize to same weights as policy net
         self.policy_net_OLD.load_state_dict(self.policy_net.state_dict())
 
     def get_normalized_advantages(self, advantages: torch.Tensor) -> torch.Tensor:
-        """
-        Normalize the advantages by subtracting the mean and dividing by the standard deviation.
-
-        The formula for normalization is given by:
-
-            .. math:: A_{\\text{normalized}} = \\frac{A - A_{\\text{mean}}}{A_{\\text{std}} + \\text{smoothing const.}}
-
-        Parameters:
-
-        - advantages (torch.Tensor): A tensor of advantages to be normalized.
-        - smoothing_constant (float, optional): A small value added for numerical stability. Default is 1e-10.
-
-        Returns:
-
-        - torch.Tensor: A tensor of normalized advantages.
-        """
-
         normalized_advantages = (advantages - advantages.mean()) / (torch.std(advantages) + self.smoothing_constant)
         return normalized_advantages
 
     def compute_GAE(self, deltas: torch.Tensor) -> torch.Tensor:
-        """
-        Compute the Generalized Advantage Estimation (GAE) for a given sequence of deltas and optionally normalize the advantages.
-
-        GAE provides a bias-variance tradeoff for estimating the advantage function. It computes
-        the advantage by taking a weighted average of n-step advantage estimators:
-
-            .. math:: A_t = \\delta_t + (\\gamma \\lambda) \\delta_{t+1} + (\\gamma \\lambda)^2 \\delta_{t+2} + \\dots
-
-        Where:
-
-        - :math:`\\delta_t` is the temporal difference (TD) residual at time t.
-        - :math:`\\gamma` is the discount factor.
-        - :math:`\\lambda` is a hyperparameter that determines the weighting of future TD residuals.
-
-        If normalization is requested, the advantages are normalized using:
-
-            .. math:: A_{\\text{normalized}} = \\frac{A - \\overline{A}}{\\text{std}(A) + \\text{smoothing\_constant}}
-
-        Parameters:
-        - deltas (torch.Tensor): A sequence of TD residuals.
-        - gamma (float): Discount factor, typically in the range [0, 1].
-        - lambda_ (float): GAE hyperparameter, typically in the range [0, 1].
-        - normalize_advantages (bool, optional): If set to True, the advantages are normalized. Default is True.
-        - smoothing_constant (float, optional): A small value added for numerical stability during normalization. Default is 1e-10.
-
-        Returns:
-        - torch.Tensor: A tensor of computed (and possibly normalized) GAE advantages for each delta.
-        """
-
         advantages = torch.zeros_like(deltas)
         advantage = 0.0
         for t in reversed(range(len(deltas))):
@@ -112,123 +75,44 @@ class PPOAgent:
             return self.get_normalized_advantages(advantages=advantages)
         return advantages
 
-    def compute_TD_residual(self, reward_t: float, next_value_t: float, value_t: float) -> float:
-        """
-        Compute the Temporal Difference (TD) residual for a given time step.
+    def compute_TD_residual(self, rewards: torch.tensor, next_values: torch.tensor,
+                            values: torch.tensor) -> torch.tensor:
 
-        The TD residual (  :math:`\delta_t` ) is given by:
+        return rewards + self.gamma * next_values - values
 
-            .. math:: \\delta_t = r_t + \\gamma \cdot V(s_{t+1}) - V(s_t)
-
-        where:
-
-        - :math:`r_t` is the reward at time :math:`t` .
-        - :math:`\\gamma` is the discount factor, typically in the range [0, 1] .
-        - :math:`V(s_t)` is the estimated value of state :math:`s_t` .
-        - :math:`V(s_{t+1})` is the estimated value of state :math:`s_{t+1}` .
-
-        Parameters:
-
-        - reward_t (float): Reward at time \( t \).
-        - gamma (float): Discount factor, typically in the range [0, 1].
-        - next_value_t (float): Estimated value of state at time \( t+1 \).
-        - value_t (float): Estimated value of state at time \( t \).
-
-        Returns:
-
-        - float: The computed TD residual for the given time step.
-        """
-
-        return reward_t + self.gamma * next_value_t - value_t
-
-    def get_policy_loss(self, state: torch.Tensor, action: int, advantage: float):
-        """
-        Compute the Proximal Policy Optimization (PPO) clipped objective loss for a given state, action, and advantage.
-
-        The PPO-Clip loss is defined as:
-
-        .. math::
-            L^{\\text{CLIP}}(\\theta) = -\\mathbb{E}[\\min(r(\\theta) \\cdot A_t, \\text{clip}(r(\\theta), 1 - \\epsilon, 1 + \\epsilon) \\cdot A_t)]
-
-        Where:
-
-        - :math:`r(\\theta)` is the ratio of the probability of taking an action under the current policy to the probability under the old policy.
-        - :math:`A_t` is the advantage at time :math:`t`.
-        - :math:`\\epsilon` is a hyperparameter to clip the ratio.
-
-        Parameters:
-
-        - state (torch.Tensor): The state for which the policy loss is to be computed.
-        - action (int): The action taken by the agent.
-        - advantage (float): The computed advantage for the given state-action pair.
-        - epsilon (float): The hyperparameter for the PPO clipping.
-
-        Returns:
-
-        - float: The computed PPO-Clip loss for the given inputs.
-        """
-        # Compute the PPO-Clip loss
+    def get_policy_loss(self, states: torch.Tensor, actions: torch.Tensor, advantages: torch.Tensor):
 
         # Compute the probability of the action taken under the old policy
-        action_probs_old = self.policy_net_OLD(state)
-        pi_old = action_probs_old[action]
+        action_probs_old = self.policy_net_OLD(states)
+        pi_old = torch.gather(input=action_probs_old, dim=1, index=actions.unsqueeze(1))
 
         # Compute the probability of the action taken under the current policy
-        action_probs_new = self.policy_net(state)
-        pi_new = action_probs_new[action]
+        action_probs_new = self.policy_net(states)
+        pi_new = torch.gather(input=action_probs_new, dim=1, index=actions.unsqueeze(1))
 
         # Compute the ratio r(θ)
-        r = pi_new / pi_old
+        r = (pi_new / pi_old).flatten()
 
         # Compute the clipped surrogate objective
-        surrogate_obj = r * advantage
-        clipped_obj = torch.clamp(r, 1 - self.epsilon, 1 + self.epsilon) * advantage
+        surrogate_obj = r * advantages
 
-        # Compute the PPO-Clip loss
-        loss = -torch.min(surrogate_obj, clipped_obj).mean()
-        return loss
+        clipped_obj = torch.clamp(r, 1 - self.epsilon, 1 + self.epsilon) * advantages
 
-    def get_value_loss(self, state: torch.Tensor, next_state: torch.Tensor, reward: torch.Tensor, is_last_step: bool):
-        """
-        Compute the value loss for a given state using Temporal Difference (TD) learning.
+        # Compute the policy loss
+        policy_loss = -torch.min(surrogate_obj, clipped_obj).mean()
+        return policy_loss
 
-        The value loss is calculated using the squared difference between the estimated value of the current state
-        and a target value. The target value is computed as:
+    def get_value_loss(self, states: torch.Tensor, next_states: torch.Tensor, rewards: torch.Tensor):
 
-            .. math:: \\text{target value} = r_t + \\gamma \cdot V(s_{t+1})
-
-        Where:
-
-        - :math:`r_t` is the reward at time :math:`t`.
-        - :math:`\\gamma` is the discount factor, typically in the range [0, 1].
-        - :math:`V(s_{t+1})` is the estimated value of state :math:`s_{t+1}`.
-
-        Parameters:
-
-        - state (torch.Tensor): The current state.
-        - next_state (torch.Tensor): The next state.
-        - reward (torch.Tensor): The reward at the current time step.
-        - gamma (float): Discount factor, typically in the range [0, 1].
-        - is_last_step (bool): Boolean indicating whether the current step is the last in the episode.
-
-        Returns:
-        - torch.Tensor: The computed value loss for the given state.
-        """
-
-        # Compute target value
-        if is_last_step:  # If it's the last step in the episode
-            target_value = reward
-        else:
-            # We detach the value estimate of the next state to prevent it from being
-            # updated during the gradient descent of the current state's value.
-            # This is done to treat the next state's value estimate as a constant target.
-            target_value = reward + self.gamma * self.value_net(next_state).detach()
+        # Compute target value (for last step - set to reward)
+        target_values = rewards + self.gamma * self.value_net(next_states).flatten().detach()
+        target_values = torch.cat((target_values[:-1], torch.tensor([rewards[-1].item()])))
 
         # Compute estimated value
-        value_estimate = self.value_net(state)
+        estimated_values = self.value_net(states).flatten()
 
         # Compute the value loss
-        value_loss = torch.nn.functional.mse_loss(value_estimate, target_value.reshape(value_estimate.shape))
+        value_loss = torch.nn.functional.mse_loss(estimated_values, target_values)
 
         return value_loss
 
@@ -244,93 +128,85 @@ class PPOAgent:
 
         for episode in tqdm(range(episodes)):
             # Retrieving batch of trajectories
-            trajectories = Trajectories(batch_size=self.batch_size, env=self.env, policy_network=self.policy_net)
+            trajectories = Trajectories(batch_size=self.batch_size, env=self.env, policy_network=self.policy_net,
+                                        seed=episode * self.batch_size + 1)
+            # States_batch has dims:      (batch size , game length , state space size)
+            # next_states_batch has dims: (batch size , game length , state space size)
+            # actions_batch has dims:     (batch size , game length)
+            # rewards_batch has dims:     (batch size , game length)
             states_batch, actions_batch, rewards_batch, next_states_batch = trajectories.get_batch()
+            # Computing advantages
+            advantages_batch = torch.zeros_like(rewards_batch)
+            for trajectory in range(self.batch_size):
+                states = states_batch[trajectory]
+                rewards = rewards_batch[trajectory]
+                next_states = next_states_batch[trajectory]
 
-            # Saving game length and batch size in variable
-            game_length = actions_batch.shape[1]
-
-            advantages_batch = []
-
-            for batch in range(self.batch_size):
-
-                states = states_batch[batch]
-                rewards = rewards_batch[batch]
-                next_states = next_states_batch[batch]
-
-                # Iterate backwards through the trajectory to compute deltas and advantages
-                deltas = torch.zeros(size=(game_length,))
-                for t in range(game_length):
-
-                    # Retrieve data for current time step
-                    state_t, next_state_t, reward_t = states[t], next_states[t], rewards[t]
-
-                    # Compute value estimates
-                    value_t = self.value_net(state_t)
-                    if t == game_length - 1:  # If it's the last step in the episode
-                        next_value_t = torch.tensor([[0.0]])  # The value is 0 at the end of the episode
-                    else:
-                        next_value_t = self.value_net(next_state_t)
-
-                    # Compute the TD residual (delta)
-                    deltas[t] = self.compute_TD_residual(reward_t=reward_t, next_value_t=next_value_t, value_t=value_t)
-
-                advantages_batch.append(self.compute_GAE(deltas=deltas))
+                values = self.value_net(states).flatten()
+                # The value is 0 at the end of the trajectory (hence the concatenation of 0 at the end)
+                next_values = torch.cat((self.value_net(next_states)[:-1].flatten(), torch.tensor([0])))
+                deltas = self.compute_TD_residual(rewards=rewards, next_values=next_values, values=values)
+                advantages_batch[trajectory] = self.compute_GAE(deltas=deltas)
 
             # Store the old policy parameters (before update)
             self.policy_net_OLD.load_state_dict(self.policy_net.state_dict())
 
-            # For a fixed number of policy update epochs:
+            # Policy Network Update:
             for policy_epoch in range(num_policy_epochs):
+                for trajectory in range(self.batch_size):
+                    states = states_batch[trajectory].detach()
+                    actions = actions_batch[trajectory].detach()
+                    advantages = advantages_batch[trajectory].detach()
 
-                for batch in range(self.batch_size):
-                    states = states_batch[batch]
-                    actions = actions_batch[batch]
-                    advantages = advantages_batch[batch]
+                    # Compute the policy loss
+                    policy_loss = self.get_policy_loss(states=states, actions=actions, advantages=advantages)
 
-                    for t in range(game_length):
-                        # Retrieve t'th step of trajectory
-                        state_t, action_t, advantage_t = states[t].detach(), actions[t].detach(), advantages[t].detach()
+                    # Update policy parameters using the optimizer
+                    policy_optimizer.zero_grad()
+                    policy_loss.backward()
+                    policy_optimizer.step()
 
-                        # Compute the policy loss
-                        policy_loss = self.get_policy_loss(state=state_t, action=action_t, advantage=advantage_t)
+                # Shuffle batch
+                if self.shuffle_batches:
+                    states_batch, actions_batch, rewards_batch, next_states_batch, advantages_batch = random_shuffle(
+                        states_batch=states_batch,
+                        actions_batch=actions_batch,
+                        rewards_batch=rewards_batch,
+                        next_states_batch=next_states_batch,
+                        advantages_batch=advantages_batch,
+                        seed=self.seed)
 
-                        # Update policy parameters using the optimizer
-                        policy_optimizer.zero_grad()
-                        policy_loss.backward()
-                        policy_optimizer.step()
-
-            # Step 4: Value Network Update
+            # Value Network Update
             for value_epoch in range(num_value_epochs):
-
                 for batch in range(self.batch_size):
                     states = states_batch[batch]
                     rewards = rewards_batch[batch]
                     next_states = next_states_batch[batch]
 
-                    is_last_step = False
-                    for t in range(game_length):
-                        # Retrieve t'th step of trajectory
-                        state_t, next_state_t, reward_t = states[t], next_states[t], rewards[t]
-                        if t == game_length - 1:
-                            is_last_step = True
-                        # Compute value loss
-                        value_loss = self.get_value_loss(state=state_t,
-                                                         next_state=next_state_t,
-                                                         reward=reward_t,
-                                                         is_last_step=is_last_step)
+                    # Compute the value loss
+                    value_loss = self.get_value_loss(states=states, next_states=next_states, rewards=rewards)
 
-                        # Update value network parameters using the optimizer
-                        value_optimizer.zero_grad()
-                        value_loss.backward()
-                        value_optimizer.step()
+                    # Update value network parameters using the optimizer
+                    value_optimizer.zero_grad()
+                    value_loss.backward()
+                    value_optimizer.step()
+
+                # Shuffle batch
+                if self.shuffle_batches:
+                    states_batch, actions_batch, rewards_batch, next_states_batch, advantages_batch = random_shuffle(
+                        states_batch=states_batch,
+                        actions_batch=actions_batch,
+                        rewards_batch=rewards_batch,
+                        next_states_batch=next_states_batch,
+                        advantages_batch=advantages_batch,
+                        seed=self.seed)
 
             avg_accumulated_reward.append(float(torch.mean(torch.sum(rewards_batch, dim=1)).detach().numpy()))
         return avg_accumulated_reward
 
     def play(self, render=True):
         # Reset environment and get the initial state
-        state, info = self.env.reset()
+        state, info = self.env.reset(seed=self.seed)
 
         done = False
         game_length = 0
