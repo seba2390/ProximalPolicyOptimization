@@ -5,15 +5,12 @@ class ValueNetwork(torch.nn.Module):
     def __init__(self,
                  state_space_size: int,
                  dtype: torch.dtype = torch.float32,
-                 seed: int = 0,
                  device: str = 'cpu') -> None:
         super(ValueNetwork, self).__init__()
 
         self.state_space_size = state_space_size
         self.dtype = dtype
-        self.seed = seed
         self.device = device
-        torch.manual_seed(self.seed)
 
         self.lin_layer_1 = torch.nn.Linear(in_features=self.state_space_size,
                                            out_features=self.state_space_size,

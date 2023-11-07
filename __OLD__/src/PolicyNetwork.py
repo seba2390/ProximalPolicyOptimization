@@ -6,16 +6,13 @@ class PolicyNetwork(torch.nn.Module):
                  state_space_size: int,
                  action_space_size: int,
                  dtype: torch.dtype = torch.float32,
-                 seed: int = 0,
                  device: str = 'cpu') -> None:
         super(PolicyNetwork, self).__init__()
 
         self.state_space_size = state_space_size
         self.action_space_size = action_space_size
         self.dtype = dtype
-        self.seed = seed
         self.device = device
-        torch.manual_seed(self.seed)
 
         self.lin_layer_1 = torch.nn.Linear(in_features=self.state_space_size,
                                            out_features=2 * self.state_space_size,
