@@ -8,6 +8,7 @@ from src.PolicyNetwork import PolicyNetwork
 from src.Trajectories import Trajectories
 from src.MultiHeadNetwork import MultiHeadNetwork
 from src.Utils import random_shuffle
+from src.OptimizerParameters import AdamOptimizerParameters
 
 
 class PPOAgent:
@@ -16,7 +17,6 @@ class PPOAgent:
                  state_space_size: int,
                  action_space_size: int,
                  batch_size: int,
-                 max_game_length: int,
                  gamma: float,
                  lmbda: float,
                  epsilon: float,
@@ -38,7 +38,6 @@ class PPOAgent:
         self.smoothing_constant = smooting_const
         self.normalize_advantages = normalize_advantages
         self.batch_size = batch_size
-        self.max_game_length = max_game_length
         self.shuffle_batches = shuffle_batches
 
         self.architecture = architecture
@@ -179,9 +178,9 @@ class PPOAgent:
 
     def train(self,
               episodes: int,
-              policy_lr: float = None,
-              value_lr: float = None,
-              multihead_lr: float = None,
+              policy_optimizer_params: AdamOptimizerParameters = None,
+              value_optimizer_params: AdamOptimizerParameters = None,
+              multihead_optimizer_params: AdamOptimizerParameters = None,
               num_policy_epochs: int = None,
               num_value_epochs: int = None,
               num_multihead_epochs: int = None):
@@ -192,21 +191,26 @@ class PPOAgent:
 
             avg_value_net_loss, avg_policy_net_loss = [], []
 
-            if policy_lr is None or value_lr is None or num_policy_epochs is None or num_value_epochs is None:
+            if num_policy_epochs is None or num_value_epochs is None or policy_optimizer_params is None or value_optimizer_params is None:
                 raise ValueError("If architecture is Individual Networks, all the following params must be provided"
-                                 " [policy_lr, value_lr, num_policy_epochs, num_value_epochs].")
+                                 " [num_policy_epochs, num_value_epochs, policy_optimizer_params, value_optimizer_params].")
 
             # Define the optimizer for the policy network
-            policy_optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=policy_lr)
+            policy_optimizer = torch.optim.Adam(params=self.policy_net.parameters(),
+                                                lr=policy_optimizer_params.lr,
+                                                betas=policy_optimizer_params.betas,
+                                                weight_decay=policy_optimizer_params.weight_decay)
 
             # Define the optimizer for the value network
-            value_optimizer = torch.optim.Adam(self.value_net.parameters(), lr=value_lr)
+            value_optimizer = torch.optim.Adam(params=self.value_net.parameters(),
+                                               lr=value_optimizer_params.lr,
+                                               betas=value_optimizer_params.betas,
+                                               weight_decay=value_optimizer_params.weight_decay)
 
             for episode in tqdm(range(episodes)):
 
                 # Retrieving batch of trajectories
                 trajectories = Trajectories(batch_size=self.batch_size,
-                                            max_game_length=self.max_game_length,
                                             env=self.env,
                                             policy_network=self.policy_net,
                                             multihead_network=None,
@@ -261,7 +265,7 @@ class PPOAgent:
                             rewards_batch=rewards_batch,
                             next_states_batch=next_states_batch,
                             advantages_batch=advantages_batch,
-                            seed=self.seed)
+                            seed=self.seed+episode*num_multihead_epochs+policy_epoch+1)
                 avg_policy_net_loss.append(np.mean(__current_policy_loss__))
 
                 # Value Network Update
@@ -289,25 +293,27 @@ class PPOAgent:
                             rewards_batch=rewards_batch,
                             next_states_batch=next_states_batch,
                             advantages_batch=advantages_batch,
-                            seed=self.seed)
+                            seed=self.seed+episode*num_multihead_epochs+value_epoch+1)
                 avg_value_net_loss.append(np.mean(__current_value_loss__))
 
             return avg_accumulated_reward, avg_value_net_loss, avg_policy_net_loss
 
         elif self.architecture == 'Multi Head Network':
-            if multihead_lr is None or num_multihead_epochs is None:
+            if num_multihead_epochs is None or multihead_optimizer_params is None:
                 raise ValueError("If architecture is Multi Head Network, all the following params must be provided"
-                                 " [multihead_lr, num_multihead_epochs].")
+                                 " [num_multihead_epochs, multihead_optimizer_params].")
 
             avg_multihead_net_loss = []
 
             # Define the optimizer for the multi head network
-            optimizer = torch.optim.Adam(self.multihead_net.parameters(), lr=multihead_lr)
+            optimizer = torch.optim.Adam(params=self.multihead_net.parameters(),
+                                         lr=multihead_optimizer_params.lr,
+                                         betas=multihead_optimizer_params.betas,
+                                         weight_decay=multihead_optimizer_params.weight_decay)
 
             for episode in tqdm(range(episodes)):
                 # Retrieving batch of trajectories
                 trajectories = Trajectories(batch_size=self.batch_size,
-                                            max_game_length=self.max_game_length,
                                             env=self.env,
                                             policy_network=None,
                                             multihead_network=self.multihead_net,
@@ -371,22 +377,20 @@ class PPOAgent:
                             rewards_batch=rewards_batch,
                             next_states_batch=next_states_batch,
                             advantages_batch=advantages_batch,
-                            seed=self.seed)
+                            seed=self.seed+episode*num_multihead_epochs+multihead_epoch+1)
                 avg_multihead_net_loss.append(np.mean(__current_multihead_loss__))
 
             return avg_accumulated_reward, avg_multihead_net_loss
 
-    def play(self, render=True, max_game_length: int = 10000):
+    def play(self):
+
         # Reset environment and get the initial state
         state, info = self.env.reset(seed=self.seed)
 
         done = False
         game_length = 0
-
-        while not done and game_length < max_game_length:
-            # Render the game if render is True
-            if render:
-                self.env.render()
+        total_reward = 0
+        while not done:
 
             # Convert state to tensor for policy network
             state_tensor = torch.tensor(state, dtype=self.dtype).unsqueeze(0)
@@ -401,12 +405,16 @@ class PPOAgent:
             action = torch.argmax(action_probs, dim=1)
 
             # Take the action in the environment
-            state, reward, done, _, _ = self.env.step(action.item())
+            state, reward, terminated, truncated, info = self.env.step(action.item())
+            done = terminated or truncated
 
             game_length += 1
+            total_reward += reward
 
         # Close the rendering window
         self.env.close()
-        print("#" * 36)
-        print(f"# --- Survived for: {game_length} episodes --- #")
-        print("#" * 36)
+
+        statement = f"# --- Survived for: {game_length} episodes, and earned a total reward of: {total_reward} --- #"
+        print("#" * len(statement))
+        print(statement)
+        print("#" * len(statement))

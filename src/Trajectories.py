@@ -9,7 +9,6 @@ from src import MultiHeadNetwork
 class Trajectories:
     def __init__(self,
                  batch_size: int,
-                 max_game_length: int,
                  env: gym.Env,
                  policy_network: PolicyNetwork,
                  multihead_network: MultiHeadNetwork,
@@ -21,7 +20,6 @@ class Trajectories:
             raise ValueError(f'batch_size must be a positive integer >= 1, not {batch_size}.')
 
         self.batch_size = batch_size
-        self.max_game_length = max_game_length
         self.env = env
         self.architecture = architecture
         self.policy_network = policy_network
@@ -37,7 +35,7 @@ class Trajectories:
         states, actions, rewards, next_states = [], [], [], []
 
         done = False
-        while not done and len(rewards) < self.max_game_length:
+        while not done:
             # Retrieve current action prob. distribution
             if self.architecture == 'Individual Networks':
                 action_probs = self.policy_network(torch.tensor(state))
@@ -50,7 +48,8 @@ class Trajectories:
             action = torch.multinomial(input=action_probs, num_samples=1)
 
             # interact with env.
-            next_state, reward, done, _, _ = self.env.step(action.item())
+            next_state, reward, terminated, truncated, info = self.env.step(action.item())
+            done = terminated or truncated
 
             # Store trajectory data
             states.append(state.tolist())
