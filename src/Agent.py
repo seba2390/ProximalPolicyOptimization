@@ -183,7 +183,8 @@ class PPOAgent:
               multihead_optimizer_params: AdamOptimizerParameters = None,
               num_policy_epochs: int = None,
               num_value_epochs: int = None,
-              num_multihead_epochs: int = None):
+              num_multihead_epochs: int = None,
+              verbose: bool = True):
 
         avg_accumulated_reward = []
 
@@ -207,7 +208,7 @@ class PPOAgent:
                                                betas=value_optimizer_params.betas,
                                                weight_decay=value_optimizer_params.weight_decay)
 
-            for episode in tqdm(range(episodes)):
+            for episode in tqdm(range(episodes), disable=not verbose):
 
                 # Retrieving batch of trajectories
                 trajectories = Trajectories(batch_size=self.batch_size,
@@ -265,7 +266,7 @@ class PPOAgent:
                             rewards_batch=rewards_batch,
                             next_states_batch=next_states_batch,
                             advantages_batch=advantages_batch,
-                            seed=self.seed+episode*num_multihead_epochs+policy_epoch+1)
+                            seed=self.seed+episode*num_policy_epochs+policy_epoch+1)
                 avg_policy_net_loss.append(np.mean(__current_policy_loss__))
 
                 # Value Network Update
@@ -293,7 +294,7 @@ class PPOAgent:
                             rewards_batch=rewards_batch,
                             next_states_batch=next_states_batch,
                             advantages_batch=advantages_batch,
-                            seed=self.seed+episode*num_multihead_epochs+value_epoch+1)
+                            seed=self.seed+episode*num_value_epochs+value_epoch+1)
                 avg_value_net_loss.append(np.mean(__current_value_loss__))
 
             return avg_accumulated_reward, avg_value_net_loss, avg_policy_net_loss
@@ -311,7 +312,7 @@ class PPOAgent:
                                          betas=multihead_optimizer_params.betas,
                                          weight_decay=multihead_optimizer_params.weight_decay)
 
-            for episode in tqdm(range(episodes)):
+            for episode in tqdm(range(episodes), disable=not verbose):
                 # Retrieving batch of trajectories
                 trajectories = Trajectories(batch_size=self.batch_size,
                                             env=self.env,
